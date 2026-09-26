@@ -260,6 +260,51 @@ class _OpsMixin:
                 "expected_sha256 must be 64 lowercase hexadecimal characters"
             )
 
+        lease = lease_ref
+        if expected_sha256 is not None:
+            if requested_recursive:
+                raise InvalidArgumentError("expected_sha256 only supports non-directory files")
+            if lease is None:
+                try:
+                    lease = await self._async_agfs.pathlock_acquire_exact(path)
+                except LockAcquisitionError:
+                    raise ResourceBusyError(f"Resource is being processed: {uri}", uri=uri)
+            conditional_verified = False
+            try:
+                stat = await self._async_agfs.stat(path)
+                is_dir = stat.get("isDir", False) if isinstance(stat, dict) else False
+                if is_dir:
+                    raise InvalidArgumentError("expected_sha256 only supports non-directory files")
+                fs_ctx = self._pathlock_fs_ctx(ctx, lease)
+                current = self._handle_agfs_read(
+                    await self._async_agfs.read(path, fs_ctx=fs_ctx)
+                )
+                actual_sha256 = hashlib.sha256(current).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise AbortedError(
+                        "File content changed before conditional deletion",
+                        details={
+                            "resource": target_uri,
+                            "expected_sha256": expected_sha256,
+                            "actual_sha256": actual_sha256,
+                        },
+                    )
+                conditional_verified = True
+            except Exception as exc:
+                if is_not_found_error(exc):
+                    raise AbortedError(
+                        "File content changed before conditional deletion",
+                        details={
+                            "resource": target_uri,
+                            "expected_sha256": expected_sha256,
+                            "actual_sha256": None,
+                        },
+                    ) from exc
+                raise
+            finally:
+                if lease_ref is None and lease is not None and not conditional_verified:
+                    await self._async_agfs.pathlock_release(lease)
+
         async def _estimate_deleted_count(target_path: str, real_ctx: RequestContext) -> int:
             """Estimate number of nodes to be deleted using vector index."""
             vector_store = self._get_vector_store()
@@ -273,26 +318,27 @@ class _OpsMixin:
                 logger.warning(f"[VikingFS] Failed to count nodes before delete: {e}")
                 return 0
 
-        # Check existence and determine lock strategy
-        try:
-            stat = await self._async_agfs.stat(path)
-            is_dir = stat.get("isDir", False) if isinstance(stat, dict) else False
-        except Exception as exc:
-            if not is_not_found_error(exc):
-                mapped = map_exception(exc, resource=uri)
-                if mapped is not None:
-                    raise mapped from exc
-                raise
-            if recursive:
-                await self._ensure_access(target_uri, ctx, action=AclAction.MANAGE)
-            # Path does not exist: clean up any orphan index records and return
-            uris_to_delete = await self._collect_uris(path, recursive, ctx=ctx)
-            uris_to_delete.append(target_uri)
-            real_ctx = self._ctx_or_default(ctx)
-            estimated_count = await _estimate_deleted_count(path, real_ctx)
-            await self._delete_from_vector_store(uris_to_delete, ctx=ctx)
-            logger.info(f"[VikingFS] rm target not found, cleaned orphan index: {uri}")
-            return {"estimated_deleted_count": estimated_count}
+        if expected_sha256 is None:
+            # Check existence and determine lock strategy
+            try:
+                stat = await self._async_agfs.stat(path)
+                is_dir = stat.get("isDir", False) if isinstance(stat, dict) else False
+            except Exception as exc:
+                if not is_not_found_error(exc):
+                    mapped = map_exception(exc, resource=uri)
+                    if mapped is not None:
+                        raise mapped from exc
+                    raise
+                if recursive:
+                    await self._ensure_access(target_uri, ctx, action=AclAction.MANAGE)
+                # Path does not exist: clean up any orphan index records and return
+                uris_to_delete = await self._collect_uris(path, recursive, ctx=ctx)
+                uris_to_delete.append(target_uri)
+                real_ctx = self._ctx_or_default(ctx)
+                estimated_count = await _estimate_deleted_count(path, real_ctx)
+                await self._delete_from_vector_store(uris_to_delete, ctx=ctx)
+                logger.info(f"[VikingFS] rm target not found, cleaned orphan index: {uri}")
+                return {"estimated_deleted_count": estimated_count}
 
         if is_dir:
             await self._ensure_access(target_uri, ctx, action=AclAction.MANAGE)
@@ -310,7 +356,6 @@ class _OpsMixin:
         # can opt out of the VikingFS-level lease via auto_pathlock=False, in
         # which case the AGFS delete also runs with automatic pathlock disabled.
         skip_lock = lease_ref is None and not auto_pathlock and expected_sha256 is None
-        lease = lease_ref
         if lease is None and not skip_lock:
             try:
                 lease = await lock_method(path)
@@ -318,25 +363,6 @@ class _OpsMixin:
                 raise ResourceBusyError(f"Resource is being processed: {uri}", uri=uri)
 
         try:
-            if expected_sha256 is not None:
-                if is_dir or requested_recursive:
-                    raise InvalidArgumentError(
-                        "expected_sha256 only supports non-directory files"
-                    )
-                fs_ctx = self._pathlock_fs_ctx(ctx, lease)
-                current = self._handle_agfs_read(
-                    await self._async_agfs.read(path, fs_ctx=fs_ctx)
-                )
-                actual_sha256 = hashlib.sha256(current).hexdigest()
-                if actual_sha256 != expected_sha256:
-                    raise AbortedError(
-                        "File content changed before conditional deletion",
-                        details={
-                            "resource": target_uri,
-                            "expected_sha256": expected_sha256,
-                            "actual_sha256": actual_sha256,
-                        },
-                    )
             uris_to_delete = (
                 await self._collect_uris(
                     path,

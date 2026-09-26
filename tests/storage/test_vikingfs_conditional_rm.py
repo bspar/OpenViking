@@ -28,6 +28,9 @@ class _ConditionalDeleteAGFS:
         self.conditional_read_entered = asyncio.Event()
         self.release_conditional_read = asyncio.Event()
         self.pause_conditional_read = False
+        self.missing_stat_entered = asyncio.Event()
+        self.release_missing_stat = asyncio.Event()
+        self.pause_missing_stat = False
 
     def _lock_for(self, path: str) -> asyncio.Lock:
         return self._locks.setdefault(path, asyncio.Lock())
@@ -35,12 +38,19 @@ class _ConditionalDeleteAGFS:
     async def ensure_parent_dirs(self, path: str, fs_ctx=None) -> None:
         del path, fs_ctx
 
+    async def ls(self, path: str, **kwargs):
+        del path, kwargs
+        return []
+
     async def stat(self, path: str):
         self.stat_calls.append(path)
         if path in self.files:
             return {"isDir": False}
         if path in self.directories:
             return {"isDir": True}
+        if self.pause_missing_stat:
+            self.missing_stat_entered.set()
+            await self.release_missing_stat.wait()
         raise FileNotFoundError(path)
 
     async def pathlock_acquire_exact(self, path: str):
@@ -231,3 +241,63 @@ async def test_rm_keeps_conditional_delete_lease_when_auto_pathlock_is_disabled(
     await asyncio.wait_for(backend.conditional_read_entered.wait(), timeout=1)
     backend.release_conditional_read.set()
     await delete_task
+
+
+@pytest.mark.asyncio
+async def test_rm_rejects_absent_conditional_target_without_vector_cleanup(conditional_rm_env):
+    viking_fs, backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/missing.md"
+
+    with pytest.raises(AbortedError, match="content changed"):
+        await viking_fs.rm(
+            uri,
+            ctx=ctx,
+            expected_sha256=hashlib.sha256(b"reviewed bytes").hexdigest(),
+        )
+
+    assert backend._next_lease == 1
+    vector_store.delete_uris.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rm_keeps_unconditional_missing_target_orphan_cleanup(conditional_rm_env):
+    viking_fs, backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/unconditional-missing.md"
+
+    result = await viking_fs.rm(uri, ctx=ctx)
+
+    assert result["estimated_deleted_count"] == 0
+    assert backend._next_lease == 0
+    vector_store.delete_uris.assert_awaited_once_with(ctx, [uri])
+
+
+@pytest.mark.asyncio
+async def test_rm_rejects_recreated_conditional_target_without_vector_cleanup(
+    conditional_rm_env,
+):
+    viking_fs, backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/recreated.md"
+    backend.pause_missing_stat = True
+    backend.writer_waiting.clear()
+
+    delete_task = asyncio.create_task(
+        viking_fs.rm(
+            uri,
+            ctx=ctx,
+            expected_sha256=hashlib.sha256(b"reviewed bytes").hexdigest(),
+        )
+    )
+    await asyncio.wait_for(backend.missing_stat_entered.wait(), timeout=1)
+
+    writer_task = asyncio.create_task(viking_fs.write_file(uri, b"recreated", ctx=ctx))
+    await asyncio.wait_for(backend.writer_waiting.wait(), timeout=1)
+    writer_completed_before_stat = writer_task.done()
+
+    backend.release_missing_stat.set()
+    with pytest.raises(AbortedError, match="content changed"):
+        await delete_task
+    await writer_task
+
+    assert not writer_completed_before_stat
+    assert await viking_fs.read_file_bytes(uri, ctx=ctx) == b"recreated"
+    vector_store.delete_uris.assert_not_awaited()
