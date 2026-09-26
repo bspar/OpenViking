@@ -302,6 +302,10 @@ class _OpsMixin:
                 conditional_verified = True
             except Exception as exc:
                 if is_not_found_error(exc):
+                    if requested_recursive:
+                        raise InvalidArgumentError(
+                            "expected_sha256 only supports non-directory files"
+                        ) from exc
                     raise AbortedError(
                         "File content changed before conditional deletion",
                         details={

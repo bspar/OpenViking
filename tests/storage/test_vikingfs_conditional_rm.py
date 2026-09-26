@@ -316,6 +316,24 @@ async def test_rm_rejects_absent_conditional_target_without_vector_cleanup(condi
 
 
 @pytest.mark.asyncio
+async def test_rm_rejects_recursive_missing_conditional_target_before_vector_cleanup(
+    conditional_rm_env,
+):
+    viking_fs, _backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/missing-recursive.md"
+
+    with pytest.raises(InvalidArgumentError, match="only supports non-directory files"):
+        await viking_fs.rm(
+            uri,
+            ctx=ctx,
+            recursive=True,
+            expected_sha256=hashlib.sha256(b"reviewed bytes").hexdigest(),
+        )
+
+    vector_store.delete_uris.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rm_keeps_unconditional_missing_target_orphan_cleanup(conditional_rm_env):
     viking_fs, backend, vector_store, ctx = conditional_rm_env
     uri = "viking://resources/unconditional-missing.md"
