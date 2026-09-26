@@ -58,6 +58,30 @@ describe("OpenVikingClient", () => {
     expect(plain.searchParams.has("expected_sha256")).toBe(false);
   });
 
+  it("sends an explicitly empty delete digest once instead of deleting unconditionally", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => ok({}));
+    const client = new OpenVikingClient({
+      baseUrl: "https://example.com",
+      fetch: fetcher,
+    });
+
+    await client.remove("user/alice/memories/source.md", {
+      expectedSha256: "",
+    });
+    await client.remove("user/alice/memories/source.md");
+    await client.adminListAccounts({ name: "" });
+
+    const conditional = new URL(String(fetcher.mock.calls[0]![0]));
+    const omitted = new URL(String(fetcher.mock.calls[1]![0]));
+    const unrelated = new URL(String(fetcher.mock.calls[2]![0]));
+    expect(conditional.search).toContain("expected_sha256=");
+    expect(conditional.searchParams.getAll("expected_sha256")).toEqual([""]);
+    expect(omitted.searchParams.has("expected_sha256")).toBe(false);
+    expect(unrelated.searchParams.has("name")).toBe(false);
+  });
+
   it("sends identity headers and the Python/Go compatible search body", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

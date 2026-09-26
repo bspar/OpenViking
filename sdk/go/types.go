@@ -216,7 +216,8 @@ type RemoveOptions struct {
 	Recursive      bool
 	Wait           bool
 	Timeout        *float64
-	ExpectedSHA256 string
+	// ExpectedSHA256 is nil when omitted; String("") sends an invalid empty digest for server validation.
+	ExpectedSHA256 *string
 }
 
 // WriteOptions controls Write.

@@ -221,7 +221,7 @@ openviking read viking://resources/docs/api.md
 | `timeout` | number | 否 | `null` | 等待超时秒数 |
 | `expected_sha256` | string | 否 | 未设置 | 原始存储文件字节的 SHA-256，必须是恰好 64 位小写十六进制字符 |
 
-传入摘要时，比较与删除共用同一个精确路径锁。摘要不匹配时，内容和索引都保持不变。对目录执行条件删除，或同时设置 `recursive=true`，均会失败；摘要格式和目标类型由服务端最终校验。
+传入摘要时，比较与删除共用同一个精确路径锁。摘要不匹配时，内容和索引都保持不变。对目录执行条件删除，或同时设置 `recursive=true`，均会失败；摘要格式和目标类型由服务端最终校验。显式传入空摘要会发送到服务端并被拒绝，不会变为无条件删除。在 Go 中使用 `openviking.String(digest)` 区分显式传入的摘要（包括 `""`）和省略时的 `nil`。
 
 **Python SDK（同步或异步）**
 
@@ -239,7 +239,7 @@ await client.remove("viking://user/alice/memories/source.md", { expectedSha256: 
 **Go SDK**
 
 ```go
-err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: digest})
+err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: openviking.String(digest)})
 ```
 
 **HTTP API**

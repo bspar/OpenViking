@@ -15,6 +15,7 @@ const compact = (value: JsonObject): JsonObject =>
 
 export interface TransportOptions {
   query?: JsonObject;
+  preserveEmptyQueryValues?: boolean;
   body?: unknown;
   form?: FormData;
   signal?: AbortSignal;
@@ -73,10 +74,18 @@ export class OpenVikingTransport {
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (Array.isArray(value)) {
         for (const item of value) {
-          if (item !== undefined && item !== null && item !== "")
+          if (
+            item !== undefined &&
+            item !== null &&
+            (item !== "" || options.preserveEmptyQueryValues)
+          )
             url.searchParams.append(key, String(item));
         }
-      } else if (value !== undefined && value !== null && value !== "") {
+      } else if (
+        value !== undefined &&
+        value !== null &&
+        (value !== "" || options.preserveEmptyQueryValues)
+      ) {
         url.searchParams.set(key, String(value));
       }
     }

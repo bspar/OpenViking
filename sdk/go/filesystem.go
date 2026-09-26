@@ -138,8 +138,8 @@ func (c *Client) Remove(ctx context.Context, uri string, opts *RemoveOptions) er
 	if opts.Timeout != nil {
 		queryFloat(query, "timeout", *opts.Timeout)
 	}
-	if opts.ExpectedSHA256 != "" {
-		query.Set("expected_sha256", opts.ExpectedSHA256)
+	if opts.ExpectedSHA256 != nil {
+		query.Set("expected_sha256", *opts.ExpectedSHA256)
 	}
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/fs", query, nil, nil)
 }

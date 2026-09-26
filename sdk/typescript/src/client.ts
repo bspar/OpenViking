@@ -573,6 +573,7 @@ export class OpenVikingClient {
   /** Remove a resource or directory. */
   remove(uri: string, options: RemoveOptions = {}): Promise<void> {
     return this.request("DELETE", "/api/v1/fs", {
+      preserveEmptyQueryValues: true,
       query: {
         uri: normalizeURI(uri),
         recursive: options.recursive ?? false,

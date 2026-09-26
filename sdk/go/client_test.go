@@ -331,7 +331,7 @@ func TestRemoveConditionalDigestAndOmission(t *testing.T) {
 	}))
 	defer closeServer()
 
-	if err := client.Remove(context.Background(), "user/alice/memories/source.md", &RemoveOptions{ExpectedSHA256: digest}); err != nil {
+	if err := client.Remove(context.Background(), "user/alice/memories/source.md", &RemoveOptions{ExpectedSHA256: String(digest)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Remove(context.Background(), "user/alice/memories/source.md", nil); err != nil {
@@ -339,6 +339,24 @@ func TestRemoveConditionalDigestAndOmission(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d", calls)
+	}
+}
+
+func TestRemoveExplicitEmptyDigestIsNotUnconditional(t *testing.T) {
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "expected_sha256=") {
+			t.Fatalf("missing empty digest in raw query: %q", r.URL.RawQuery)
+		}
+		values := r.URL.Query()["expected_sha256"]
+		if !reflect.DeepEqual(values, []string{""}) {
+			t.Fatalf("expected exactly one empty digest, got %#v", values)
+		}
+		writeOK(t, w, map[string]any{})
+	}))
+	defer closeServer()
+
+	if err := client.Remove(context.Background(), "user/alice/memories/source.md", &RemoveOptions{ExpectedSHA256: String("")}); err != nil {
+		t.Fatal(err)
 	}
 }
 

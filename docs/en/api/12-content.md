@@ -221,7 +221,7 @@ Remove a file only if its current raw stored bytes match a supplied SHA-256 dige
 | `timeout` | number | No | `null` | Wait timeout in seconds |
 | `expected_sha256` | string | No | Unset | Exactly 64 lowercase hexadecimal characters: SHA-256 of the raw stored file bytes |
 
-With a digest, comparison and deletion share one exact-path lock. A mismatch leaves both the content and indexes unchanged. Conditional deletion of a directory or a request with `recursive=true` fails; the server validates the digest and target authoritatively.
+With a digest, comparison and deletion share one exact-path lock. A mismatch leaves both the content and indexes unchanged. Conditional deletion of a directory or a request with `recursive=true` fails; the server validates the digest and target authoritatively. An explicitly supplied empty digest is sent to the server and rejected; it never means an unconditional delete. In Go, use `openviking.String(digest)` to distinguish a supplied digest (including `""`) from `nil` (omitted).
 
 **Python SDK (sync or async)**
 
@@ -239,7 +239,7 @@ await client.remove("viking://user/alice/memories/source.md", { expectedSha256: 
 **Go SDK**
 
 ```go
-err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: digest})
+err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: openviking.String(digest)})
 ```
 
 **HTTP API**
