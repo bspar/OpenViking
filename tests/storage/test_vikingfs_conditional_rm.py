@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openviking.server.identity import RequestContext, Role
+from openviking.storage.acl import AclAction
 from openviking.storage.viking_fs import VikingFS
-from openviking_cli.exceptions import AbortedError, InvalidArgumentError
+from openviking_cli.exceptions import AbortedError, InvalidArgumentError, PermissionDeniedError
 from openviking_cli.session.user_id import UserIdentifier
 
 
@@ -169,6 +170,61 @@ async def test_rm_rejects_conditional_delete_of_directory(conditional_rm_env):
             uri,
             ctx=ctx,
             recursive=True,
+            expected_sha256=hashlib.sha256(b"directory").hexdigest(),
+        )
+
+    vector_store.delete_uris.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rm_requires_directory_manage_access_before_conditional_validation(
+    conditional_rm_env, monkeypatch
+):
+    viking_fs, backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/restricted-directory"
+    backend.directories.add(viking_fs._uri_to_path(uri, ctx=ctx))
+    access_checks: list[tuple[str, RequestContext, AclAction]] = []
+
+    async def ensure_access(request_uri, request_ctx, *, action):
+        access_checks.append((request_uri, request_ctx, action))
+        if request_uri == uri and request_ctx is ctx and action is AclAction.MANAGE:
+            raise PermissionDeniedError("directory manage denied", resource=uri)
+
+    monkeypatch.setattr(viking_fs, "_ensure_access", ensure_access)
+
+    with pytest.raises(PermissionDeniedError, match="directory manage denied"):
+        await viking_fs.rm(
+            uri,
+            ctx=ctx,
+            recursive=True,
+            expected_sha256=hashlib.sha256(b"directory").hexdigest(),
+        )
+
+    assert (uri, ctx, AclAction.MANAGE) in access_checks
+    vector_store.delete_uris.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rm_runs_directory_namespace_guard_before_conditional_validation(
+    conditional_rm_env, monkeypatch
+):
+    viking_fs, backend, vector_store, _ctx = conditional_rm_env
+    ctx = RequestContext(user=UserIdentifier.the_default_user(), role=Role(Role.USER))
+    uri = "viking://resources"
+    backend.directories.add(viking_fs._uri_to_path(uri, ctx=ctx))
+    original_ensure_access = viking_fs._ensure_access
+
+    async def ensure_access(request_uri, request_ctx, *, action):
+        if request_ctx.bypass_acl:
+            return
+        await original_ensure_access(request_uri, request_ctx, action=action)
+
+    monkeypatch.setattr(viking_fs, "_ensure_access", ensure_access)
+
+    with pytest.raises(PermissionDeniedError, match="namespace root"):
+        await viking_fs.rm(
+            uri,
+            ctx=ctx,
             expected_sha256=hashlib.sha256(b"directory").hexdigest(),
         )
 

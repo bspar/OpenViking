@@ -260,10 +260,18 @@ class _OpsMixin:
                 "expected_sha256 must be 64 lowercase hexadecimal characters"
             )
 
+        async def _validate_directory_delete() -> None:
+            await self._ensure_access(target_uri, ctx, action=AclAction.MANAGE)
+            if expected_sha256 is not None:
+                raise InvalidArgumentError("expected_sha256 only supports non-directory files")
+            if not recursive:
+                raise InvalidArgumentError(
+                    f"Cannot remove directory without --recursive: {uri}",
+                    details={"resource": uri, "expected_flag": "recursive"},
+                )
+
         lease = lease_ref
         if expected_sha256 is not None:
-            if requested_recursive:
-                raise InvalidArgumentError("expected_sha256 only supports non-directory files")
             if lease is None:
                 try:
                     lease = await self._async_agfs.pathlock_acquire_exact(path)
@@ -274,6 +282,8 @@ class _OpsMixin:
                 stat = await self._async_agfs.stat(path)
                 is_dir = stat.get("isDir", False) if isinstance(stat, dict) else False
                 if is_dir:
+                    await _validate_directory_delete()
+                if requested_recursive:
                     raise InvalidArgumentError("expected_sha256 only supports non-directory files")
                 fs_ctx = self._pathlock_fs_ctx(ctx, lease)
                 current = self._handle_agfs_read(
@@ -341,12 +351,7 @@ class _OpsMixin:
                 return {"estimated_deleted_count": estimated_count}
 
         if is_dir:
-            await self._ensure_access(target_uri, ctx, action=AclAction.MANAGE)
-            if not recursive:
-                raise InvalidArgumentError(
-                    f"Cannot remove directory without --recursive: {uri}",
-                    details={"resource": uri, "expected_flag": "recursive"},
-                )
+            await _validate_directory_delete()
             lock_method = self._async_agfs.pathlock_acquire_tree
         else:
             recursive = False
