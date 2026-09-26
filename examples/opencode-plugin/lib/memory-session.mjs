@@ -1,3 +1,4 @@
+// Local fork modifications, 2026-09-26: persist acknowledgements and stop work.
 import fs from "fs"
 import path from "path"
 import {
@@ -30,6 +31,7 @@ export function createMemorySessionManager({ config, pluginRoot }) {
   const statePath = path.join(pluginRoot, "openviking-session-state.json")
   const oldSessionMapPath = path.join(pluginRoot, "openviking-session-map.json")
   let saveTimer = null
+  let stopped = false
   let initBackground = Promise.resolve()
   // Serialize saves: concurrent saveState() calls (a debounced save racing
   // with flushAll / flushSession / session deletion) all share the same
@@ -101,10 +103,12 @@ export function createMemorySessionManager({ config, pluginRoot }) {
       log("DEBUG", "persistence", "Session state saved", { count: sessions.size })
     } catch (error) {
       log("ERROR", "persistence", "Failed to save session state", { error: error?.message })
+      throw error
     }
   }
 
   function debouncedSaveState() {
+    if (stopped) return
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
       enqueueSave().catch((error) => {
@@ -156,6 +160,7 @@ export function createMemorySessionManager({ config, pluginRoot }) {
   }
 
   async function handleEvent(event) {
+    config.runtimeSignal?.throwIfAborted()
     if (!event?.type || event.type === "session.diff") return
 
     if (event.type === "session.created") {
@@ -279,6 +284,7 @@ export function createMemorySessionManager({ config, pluginRoot }) {
     // already GC'd a stale session). Continue so later sessions still commit.
     // See https://github.com/volcengine/OpenViking/issues/4490
     for (const sessionId of sessions.keys()) {
+      config.runtimeSignal?.throwIfAborted()
       try {
         await flushSession(sessionId, { commit, reason: "flushAll" })
       } catch (err) {
@@ -292,6 +298,7 @@ export function createMemorySessionManager({ config, pluginRoot }) {
   }
 
   async function flushSession(opencodeSessionId, { commit = false, reason = "manual" } = {}) {
+    config.runtimeSignal?.throwIfAborted()
     if (!opencodeSessionId) return false
     const state = sessions.get(opencodeSessionId)
     if (!state) return false
@@ -322,6 +329,12 @@ export function createMemorySessionManager({ config, pluginRoot }) {
     commitSession,
     flushAll,
     flushSession,
+    persistCapture: enqueueSave,
+    stop() {
+      stopped = true
+      clearTimeout(saveTimer)
+      saveTimer = null
+    },
   }
 
   function createSessionState(opencodeSessionId, event = {}) {
@@ -422,11 +435,22 @@ export function createMemorySessionManager({ config, pluginRoot }) {
         added += 1
       }
     } else {
+      let acknowledged = 0
       const res = await sendSessionMessages(
         (endpoint, init = {}, options = {}) => fetchJSON(config, endpoint, init, { timeoutMs: 10000, ...options }),
         state.ovSessionId,
         toSend.map((item) => item.body),
-        { enqueueOnRetryable: true },
+        {
+          enqueueOnRetryable: true,
+          onSent: async (count) => {
+            for (const item of toSend.slice(acknowledged, acknowledged + count)) item.message.captured = true
+            acknowledged += count
+            // Persist each acknowledged batch before attempting another one.
+            // This closes the normal partial-success retry window, not the
+            // unavoidable remote-accept/local-crash window without server IDs.
+            await enqueueSave()
+          },
+        },
       )
       added = res.sent + res.queued
       for (const item of toSend.slice(0, added)) {

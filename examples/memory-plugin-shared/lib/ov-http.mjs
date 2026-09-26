@@ -1,3 +1,4 @@
+// Local fork modifications, 2026-09-26: retain caller/lifetime cancellation.
 /**
  * The one path from a hook to the OpenViking server.
  *
@@ -61,6 +62,12 @@ export function createOvHttp(cfg = {}, {
   return async function fetchJSON(path, init = {}, options = {}) {
     const timeoutMs = Math.max(MIN_TIMEOUT_MS, Number(options.timeoutMs) || Number(defaultTimeoutMs) || 0);
     const controller = new AbortController();
+    const sources = [init.signal, options.signal, cfg.runtimeSignal].filter(Boolean);
+    const cancel = () => controller.abort();
+    for (const signal of sources) {
+      if (signal.aborted) cancel();
+      else signal.addEventListener("abort", cancel, { once: true });
+    }
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -75,8 +82,10 @@ export function createOvHttp(cfg = {}, {
         }),
         ...(init.headers || {}),
       };
+      controller.signal.throwIfAborted();
       const response = await fetch(`${baseUrl}${path}`, { ...init, headers, signal: controller.signal });
       const body = await response.json().catch(() => null);
+      controller.signal.throwIfAborted();
       if (requireJsonBody && !body) {
         return {
           ok: false,
@@ -100,12 +109,13 @@ export function createOvHttp(cfg = {}, {
       const message = error?.message || String(error);
       // This module owns the controller, so it says a timeout was a timeout
       // rather than leaving callers to guess it from whatever fetch threw.
-      const failure = timedOut
+      const failure = timedOut || controller.signal.aborted
         ? { name: "AbortError", aborted: true, message }
         : { message };
       return { ok: false, status: 0, result: null, error: failure };
     } finally {
       clearTimeout(timer);
+      for (const signal of sources) signal.removeEventListener("abort", cancel);
     }
   };
 }

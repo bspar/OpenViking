@@ -1,3 +1,4 @@
+// Local fork modifications, 2026-09-26: propagate prompt cancellation.
 import { buildProfileBlock } from "./shared/profile-inject.mjs"
 import { effectivePeerId, fetchJSON, log } from "./utils.mjs"
 
@@ -5,6 +6,7 @@ export function createSessionInject({ config, sessionManager }) {
   const injectedSessions = new Set()
 
   async function buildSessionContext(input) {
+    input.signal?.throwIfAborted()
     if (config.noAutoInject) return false
     const sessionID = input.sessionID
     const messageID = input.messageID
@@ -14,14 +16,19 @@ export function createSessionInject({ config, sessionManager }) {
     if (ovSessionId.includes("__subagent-")) return false
 
     const actorPeerId = effectivePeerId(config)
-    const clientFetch = (endpoint, init = {}, options = {}) =>
-      fetchJSON(config, endpoint, init, { ...options, actorPeerId, timeoutMs: 10000 })
+    const clientFetch = async (endpoint, init = {}, options = {}) => {
+      input.signal?.throwIfAborted()
+      const result = await fetchJSON(config, endpoint, { ...init, signal: input.signal }, { ...options, actorPeerId, timeoutMs: 10000 })
+      if (!result.ok && result.status === 0) throw new Error("OpenViking session context unavailable")
+      return result
+    }
 
     const parts = []
     const profile = await buildProfileBlock(clientFetch, config.profileTokenBudget, actorPeerId, config)
     if (profile?.block) parts.push(profile.block)
 
     const archive = await fetchArchiveBlock(clientFetch, ovSessionId, config.resumeContextBudget)
+    input.signal?.throwIfAborted()
     if (archive) parts.push(archive)
 
     if (parts.length === 0) {

@@ -1,3 +1,4 @@
+// Local fork modifications, 2026-09-26: cancellable runtime lifetime.
 import { createRepoContext } from "./repo-context.mjs"
 import { createMemorySessionManager } from "./memory-session.mjs"
 import { createMemoryRecall } from "./memory-recall.mjs"
@@ -18,6 +19,8 @@ export function createOpenVikingRuntime({ client, directory, pluginRoot }) {
   }
 
   const repoContext = createRepoContext({ config })
+  const controller = new AbortController()
+  config.runtimeSignal = controller.signal
   const sessionManager = createMemorySessionManager({ config, pluginRoot: dataDir })
   const recall = createMemoryRecall({ config, sessionManager })
   const sessionInject = createSessionInject({ config, sessionManager })
@@ -47,5 +50,9 @@ export function createOpenVikingRuntime({ client, directory, pluginRoot }) {
     vikingUriNotice,
     ready,
     background,
+    stop: () => {
+      controller.abort()
+      sessionManager.stop()
+    },
   }
 }

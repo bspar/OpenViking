@@ -1,3 +1,4 @@
+// Local fork modifications, 2026-09-26: fail-open transport and cancellation.
 import { buildRecallBlock, isRecallEnabled } from "./shared/recall-core.mjs"
 import { isBypassed } from "./shared/session-model.mjs"
 import { effectivePeerId, fetchJSON, log } from "./utils.mjs"
@@ -14,15 +15,21 @@ export function createMemoryRecall({ config, sessionManager }) {
       cwd: input.directory ?? input.cwd,
     })) return
 
-    const health = await fetchJSON(config, "/health", {}, { timeoutMs: 5000 })
+    input.signal?.throwIfAborted()
+    const health = await fetchJSON(config, "/health", { signal: input.signal }, { timeoutMs: 5000 })
     if (!health.ok) return
 
     const block = await buildRecallBlock(
       // 5s is this hook's own budget for a bare retrieval; when the request
       // also spends a server fuse the helper hands down a longer deadline, and
       // overriding it here would abort a request the server was still inside.
-      (path, init = {}, options = {}) =>
-        fetchJSON(config, path, init, { ...options, timeoutMs: options.timeoutMs ?? 5000 }),
+      async (path, init = {}, options = {}) => {
+        input.signal?.throwIfAborted()
+        const result = await fetchJSON(config, path, { ...init, signal: input.signal }, { ...options, timeoutMs: options.timeoutMs ?? 5000 })
+        // Network failure/timeout is not evidence of an older server API.
+        if (!result.ok && result.status === 0) throw new Error("OpenViking recall unavailable; skipping this turn")
+        return result
+      },
       config,
       query,
       {

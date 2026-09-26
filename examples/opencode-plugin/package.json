@@ -1,6 +1,8 @@
 {
-  "name": "@openviking/opencode-plugin",
-  "version": "0.5.2",
+  "name": "openviking-opencode-plugin-local",
+  "version": "2026.9.25-2.local.1",
+  "private": true,
+  "openvikingSourceCommit": "3e02c6ac29842be214fa1560dfaf6ea39a69322c",
   "author": "@openviking",
   "description": "Unified OpenCode plugin for OpenViking repository retrieval and long-term memory",
   "type": "module",
@@ -20,12 +22,15 @@
     "scripts/",
     "README.md",
     "INSTALL.md",
-    "INSTALL-ZH.md"
+    "INSTALL-ZH.md",
+    "LICENSE",
+    "FORK.md"
   ],
   "scripts": {
-    "prepack": "node ../memory-plugin-shared/sync.mjs",
-    "check": "node --check index.mjs && node --check lib/config.mjs && node --check lib/mcp-config.mjs && node --check lib/runtime.mjs && node --check lib/plugin-runtime.mjs && node --check lib/v2-events.mjs && node --check lib/v2-plugin.mjs && node --check lib/repo-context.mjs && node --check lib/memory-session.mjs && node --check lib/memory-recall.mjs && node --check lib/session-inject.mjs && node --check lib/viking-uri-guard.mjs && node --check lib/utils.mjs && node --check lib/shared/*.mjs && node --check servers/mcp-proxy.mjs && node --check scripts/setup.mjs && node --check tests/*.test.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "build": "node scripts/fork-build.mjs",
+    "prepack": "node scripts/fork-build.mjs",
+    "check": "node scripts/fork-check.mjs",
+    "test": "node scripts/fork-test.mjs"
   },
   "dependencies": {},
   "publishConfig": {

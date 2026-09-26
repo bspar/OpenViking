@@ -1,5 +1,8 @@
 # OpenViking OpenCode Plugin
 
+> Bounded-latency fork, modified 2026-09-26: see [FORK.md](./FORK.md) for
+> the V2 deadline/capture changes, limitations, build and upstream update workflow.
+
 A unified OpenCode plugin for OpenViking repository retrieval and long-term memory.
 
 > **Requires an OpenViking server with `viking://~` home-alias support.** Recall targets the

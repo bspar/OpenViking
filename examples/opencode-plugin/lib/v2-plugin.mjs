@@ -1,7 +1,9 @@
+// Local fork modifications, 2026-09-26: bounded V2 hooks and capture checkpoints.
 import { isRecallEnabled } from "./shared/recall-core.mjs"
 import { createOpenVikingV2McpConfig } from "./mcp-config.mjs"
 import { contextMessageEvents, normalizeV2LifecycleEvent } from "./v2-events.mjs"
 import { log } from "./utils.mjs"
+import { withDeadline, budget, createCaptureQueue, DEFAULT_PROMPT_TIMEOUT_MS, DEFAULT_CLEANUP_TIMEOUT_MS } from "./deadline.mjs"
 
 const METADATA_KEY = "openviking"
 const CURSOR_KEY_PREFIX = "capture-cursor/"
@@ -28,12 +30,11 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
   const sessionOwnership = new Map()
   // Compaction hooks can run while lifecycle events are still flushing. Keep
   // capture and flush ordered so the same pending message is never sent twice.
-  let sessionTask = Promise.resolve()
-  const serializeSession = (operation) => {
-    const task = sessionTask.then(operation)
-    sessionTask = task.catch(() => {})
-    return task
-  }
+  const captureQueue = createCaptureQueue(config.captureQueueLimit ?? 32)
+  const captureController = new AbortController()
+  const promptController = new AbortController()
+  const serializeSession = (operation, signal = captureController.signal) => captureQueue.enqueue(operation, signal)
+  let disposed = false
   const directory = ctx?.location?.project?.directory || ctx?.location?.directory
 
   if (config.mcp.enabled && ctx?.mcp?.transform) {
@@ -49,7 +50,6 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
 
   if (ctx?.tool?.hook) {
     await ctx.tool.hook("execute.before", async (event) => {
-      await runtime.ready
       await vikingUriGuard(
         { tool: event.tool, args: event.input },
         { args: event.input },
@@ -57,7 +57,6 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
     })
     await ctx.tool.hook("execute.after", async (event) => {
       try {
-        await runtime.ready
         await noticeV2Tool(event, vikingUriNotice)
       } catch (error) {
         logHookError("tool.execute.after", error)
@@ -68,12 +67,15 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
   if (ctx?.session?.hook) {
     await ctx.session.hook("prompt", async (event) => {
       try {
-        await runtime.ready
+        if (disposed) return
         await prepareV2Prompt(event, {
           directory,
           recall,
           sessionInject,
           recallEnabled: isRecallEnabled(config),
+          timeoutMs: budget(config.promptTimeoutMs, DEFAULT_PROMPT_TIMEOUT_MS),
+          ready: runtime.ready,
+          signal: promptController.signal,
         })
       } catch (error) {
         logHookError("session.prompt", error)
@@ -82,7 +84,7 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
 
     await ctx.session.hook("context", async (event) => {
       try {
-        await runtime.ready
+        if (disposed) return
         injectV2Context(event, repoContext)
       } catch (error) {
         logHookError("session.context", error)
@@ -91,10 +93,14 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
 
     await ctx.session.hook("compaction", async (event) => {
       try {
-        await runtime.ready
+        if (disposed || config.autoCapture === false) return
         // context() drops the old transcript as soon as compaction completes.
         // Capture it now; the ended event below owns the commit.
-        await serializeSession(() => captureV2Context(ctx, sessionManager, captureCursors, event.sessionID))
+        await withDeadline(async (signal) => {
+          await runtime.ready
+          signal.throwIfAborted()
+          await serializeSession(() => captureV2Context(ctx, sessionManager, captureCursors, event.sessionID, signal), signal)
+        }, { timeoutMs: budget(config.captureBoundaryTimeoutMs, 250), signals: [captureController.signal] })
       } catch (error) {
         logHookError("session.compaction.capture", error)
       }
@@ -118,7 +124,7 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
         }
         if (isExecutionBoundary(event.type)) {
           try {
-            await captureV2Context(ctx, sessionManager, captureCursors, sessionID)
+            if (config.autoCapture !== false) await captureV2Context(ctx, sessionManager, captureCursors, sessionID, captureController.signal)
           } catch (error) {
             logHookError("session.context.capture", error)
           }
@@ -138,18 +144,31 @@ export async function startV2Plugin(ctx, runtime, { pluginRoot }) {
   }
 
   return async () => {
+    disposed = true
+    promptController.abort()
     controller.abort()
+    let complete = false
     try {
-      await eventTask
-      await sessionTask
-      await runtime.ready
-      await runtime.background
-      await sessionManager.waitForBackground?.()
-      await sessionManager.flushAll({ commit: true })
+      await withDeadline(async (signal) => {
+        for (const pending of [eventTask, captureQueue.drain(), runtime.ready, runtime.background]) {
+          await pending
+          signal.throwIfAborted()
+        }
+        await sessionManager.waitForBackground?.()
+        signal.throwIfAborted()
+        await sessionManager.flushAll({ commit: true })
+        signal.throwIfAborted()
+        complete = true
+      }, { timeoutMs: budget(config.cleanupTimeoutMs, DEFAULT_CLEANUP_TIMEOUT_MS) })
     } catch (error) {
       logHookError("plugin.cleanup", error)
+    } finally {
+      captureController.abort()
+      runtime.stop?.()
     }
-    log("INFO", "plugin", "OpenViking plugin disposed")
+    // Completion is not proof of remote extraction/durability: upstream flush
+    // can report per-session failures and retain pending local work.
+    log(complete ? "INFO" : "WARN", "plugin", "OpenViking plugin disposed", { cleanupCompleted: complete })
   }
 }
 
@@ -173,13 +192,32 @@ export async function prepareV2Prompt(event, {
   recall,
   sessionInject,
   recallEnabled,
+  timeoutMs = DEFAULT_PROMPT_TIMEOUT_MS,
+  ready,
+  signal,
 }) {
+  // Never let late, non-cooperative work mutate an admitted prompt.
+  const draft = { ...event, metadata: { ...event.metadata } }
+  try {
+    await withDeadline(async (requestSignal) => {
+      await ready
+      requestSignal.throwIfAborted()
+      await buildV2Prompt(draft, { directory, recall, sessionInject, recallEnabled, signal: requestSignal })
+      requestSignal.throwIfAborted()
+    }, { timeoutMs, signals: [signal, event.signal] })
+    if (draft.metadata[METADATA_KEY]) event.metadata = draft.metadata
+  } catch {
+    log("WARN", "recall", "Optional prompt context skipped (deadline or cancellation)")
+  }
+}
+
+async function buildV2Prompt(event, { directory, recall, sessionInject, recallEnabled, signal }) {
   const sessionID = event?.sessionID
   const messageID = event?.messageID
   if (!sessionID || !messageID) return
   const text = event?.prompt?.text
   const parts = typeof text === "string" && text.trim() ? [{ type: "text", text }] : []
-  const input = { sessionID, messageID, directory }
+  const input = { sessionID, messageID, directory, signal }
   const blocks = []
   try {
     const sessionBlock = await sessionInject.buildSessionContext(input)
@@ -187,6 +225,7 @@ export async function prepareV2Prompt(event, {
   } catch (error) {
     logHookError("session.prompt.profile", error)
   }
+  signal.throwIfAborted()
   if (recallEnabled) {
     try {
       const recallBlock = await recall.buildRelevantMemories(input, parts)
@@ -195,6 +234,7 @@ export async function prepareV2Prompt(event, {
       logHookError("session.prompt.recall", error)
     }
   }
+  signal.throwIfAborted()
   if (blocks.length === 0) return
 
   event.metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {}
@@ -251,8 +291,10 @@ function sameLocation(ref, location) {
   return !ref.workspaceID || !location.workspaceID || ref.workspaceID === location.workspaceID
 }
 
-export async function captureV2Context(ctx, sessionManager, cursors, sessionID) {
-  const messages = await ctx.session.context({ sessionID })
+export async function captureV2Context(ctx, sessionManager, cursors, sessionID, signal) {
+  signal?.throwIfAborted()
+  const messages = await ctx.session.context({ sessionID }, { signal })
+  signal?.throwIfAborted()
   if (!Array.isArray(messages)) return
   // The cursor lives in host storage because the session state file is shared
   // by every location instance and cannot prove what was already captured.
@@ -261,11 +303,16 @@ export async function captureV2Context(ctx, sessionManager, cursors, sessionID) 
   const pending = cursorIndex >= 0 ? messages.slice(cursorIndex + 1) : messages
   for (const message of pending) {
     for (const normalized of contextMessageEvents(sessionID, message)) {
+      signal?.throwIfAborted()
       await sessionManager.handleEvent(normalized)
     }
   }
   const last = messages.at(-1)?.id
   if (!last) return
+  // A host cursor is an acknowledgement: only advance after local capture
+  // state is persisted. Failure leaves the cursor for a later retry.
+  await sessionManager.persistCapture?.()
+  signal?.throwIfAborted()
   cursors.set(sessionID, last)
   if (last !== cursor) await writeCursor(ctx, sessionID, last)
 }

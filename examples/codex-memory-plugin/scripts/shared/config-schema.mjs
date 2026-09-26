@@ -1,4 +1,5 @@
 // GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.
+// Local fork modifications, 2026-09-26: explicit OpenCode whole-hook budgets.
 /**
  * Every knob a memory plugin reads, declared once.
  *
@@ -61,6 +62,11 @@ export const KNOBS = [
     capability: "connection",
   },
   { name: "mcpEnabled", type: "bool", default: true, capability: "connection" },
+  // Local OpenCode fork: whole hook budgets, not individual HTTP timeouts.
+  { name: "promptTimeoutMs", type: "int", default: 2000, min: 100, max: 10000, env: "OPENVIKING_PROMPT_TIMEOUT_MS", capability: "connection" },
+  { name: "cleanupTimeoutMs", type: "int", default: 1000, min: 100, max: 10000, env: "OPENVIKING_CLEANUP_TIMEOUT_MS", capability: "connection" },
+  { name: "captureBoundaryTimeoutMs", type: "int", default: 250, min: 100, max: 1000, env: "OPENVIKING_CAPTURE_BOUNDARY_TIMEOUT_MS", capability: "capture" },
+  { name: "captureQueueLimit", type: "int", default: 32, min: 1, max: 128, capability: "capture" },
   { name: "mcpToolCallTimeoutMs", type: "int", default: 60000, min: 1000, max: 600000, capability: "connection" },
   { name: "dataDir", type: "string", default: "", capability: "connection" },
 
