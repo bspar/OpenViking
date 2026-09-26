@@ -30,8 +30,11 @@ class _FakeVikingFS:
     async def exists(self, uri, ctx=None):
         return self.parent_exists
 
-    async def rm(self, uri, recursive=False, ctx=None):
-        self.rm_calls.append({"uri": uri, "recursive": recursive, "ctx": ctx})
+    async def rm(self, uri, recursive=False, ctx=None, expected_sha256=None):
+        call = {"uri": uri, "recursive": recursive, "ctx": ctx}
+        if expected_sha256 is not None:
+            call["expected_sha256"] = expected_sha256
+        self.rm_calls.append(call)
         if self.rm_error:
             raise self.rm_error
         return {"estimated_deleted_count": 3}
@@ -883,6 +886,28 @@ async def test_resource_rm_enqueues_parent_delete_refresh_and_waits(request_cont
     assert result["semantic_root_uri"] == "viking://resources/images/2026/06/10"
     assert result["semantic_status"] == "complete"
     assert result["queue_status"] == {"Semantic": {"pending_count": 0}}
+
+
+@pytest.mark.asyncio
+async def test_rm_forwards_expected_sha256_to_viking_fs(request_context):
+    viking_fs = _FakeVikingFS()
+    service = FSService(viking_fs=viking_fs)
+    digest = "a" * 64
+
+    await service.rm(
+        "viking://user/alice/memories/source.md",
+        ctx=request_context,
+        expected_sha256=digest,
+    )
+
+    assert viking_fs.rm_calls == [
+        {
+            "uri": "viking://user/alice/memories/source.md",
+            "recursive": False,
+            "ctx": request_context,
+            "expected_sha256": digest,
+        }
+    ]
 
 
 @pytest.mark.asyncio

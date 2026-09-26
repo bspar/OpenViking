@@ -437,6 +437,7 @@ class FSService:
         recursive: bool = False,
         wait: bool = False,
         timeout: Optional[float] = None,
+        expected_sha256: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Remove resource."""
         viking_fs = self._ensure_initialized()
@@ -444,7 +445,12 @@ class FSService:
         context_type = context_type_for_uri(uri)
         refresh_parent_uri = self._semantic_refresh_parent_uri(uri, context_type)
         memory_overview_uri = self._memory_overview_parent_uri(uri, context_type)
-        result = await viking_fs.rm(uri, recursive=recursive, ctx=ctx)
+        result = await viking_fs.rm(
+            uri,
+            recursive=recursive,
+            ctx=ctx,
+            expected_sha256=expected_sha256,
+        )
         await self._sync_watch_after_rm(uri, account_id=ctx.account_id, context_type=context_type)
         # A refresh on a parent that no longer exists would lock its sidecar
         # paths and thereby recreate the deleted directory. Nothing to

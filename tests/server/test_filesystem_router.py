@@ -3,6 +3,7 @@
 """Filesystem router tests."""
 
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import AsyncMock
 
 import httpx
@@ -21,7 +22,14 @@ from openviking_cli.session.user_id import UserIdentifier
 async def test_rm_preserves_memory_cleanup(monkeypatch):
     cleanup = {"status": "success", "memory_uris": ["viking://user/alice/memories/entities/a.md"]}
 
-    async def fake_rm(uri, ctx=None, recursive=False, wait=False, timeout=None):
+    async def fake_rm(
+        uri,
+        ctx=None,
+        recursive=False,
+        wait=False,
+        timeout=None,
+        expected_sha256=None,
+    ):
         return {"estimated_deleted_count": 1, "memory_cleanup": cleanup}
 
     monkeypatch.setattr(
@@ -39,6 +47,64 @@ async def test_rm_preserves_memory_cleanup(monkeypatch):
     assert response.result["uri"] == "viking://resources/id_card.pdf"
     assert response.result["estimated_deleted_count"] == 1
     assert response.result["memory_cleanup"] == cleanup
+
+
+@pytest.mark.asyncio
+async def test_rm_forwards_expected_sha256(monkeypatch):
+    rm_mock = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        filesystem,
+        "get_service",
+        lambda: SimpleNamespace(fs=SimpleNamespace(rm=rm_mock)),
+    )
+    ctx = RequestContext(user=UserIdentifier("acct", "alice"), role=Role.USER)
+
+    await filesystem.rm(
+        uri="viking://user/alice/memories/source.md",
+        recursive=False,
+        wait=False,
+        timeout=None,
+        expected_sha256="a" * 64,
+        _ctx=ctx,
+    )
+
+    rm_mock.assert_awaited_once_with(
+        "viking://user/alice/memories/source.md",
+        ctx=mock.ANY,
+        recursive=False,
+        wait=False,
+        timeout=None,
+        expected_sha256="a" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rm_forwards_none_when_expected_sha256_is_omitted(monkeypatch):
+    rm_mock = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        filesystem,
+        "get_service",
+        lambda: SimpleNamespace(fs=SimpleNamespace(rm=rm_mock)),
+    )
+    ctx = RequestContext(user=UserIdentifier("acct", "alice"), role=Role.USER)
+
+    await filesystem.rm(
+        uri="viking://user/alice/memories/source.md",
+        recursive=False,
+        wait=False,
+        timeout=None,
+        expected_sha256=None,
+        _ctx=ctx,
+    )
+
+    rm_mock.assert_awaited_once_with(
+        "viking://user/alice/memories/source.md",
+        ctx=mock.ANY,
+        recursive=False,
+        wait=False,
+        timeout=None,
+        expected_sha256=None,
+    )
 
 
 @pytest.mark.asyncio
