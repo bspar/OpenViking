@@ -33,6 +33,31 @@ describe("OpenVikingClient", () => {
     );
   });
 
+  it("sends one conditional delete digest and omits it for legacy deletes", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => ok({}));
+    const client = new OpenVikingClient({
+      baseUrl: "https://example.com",
+      fetch: fetcher,
+    });
+    const digest = "a".repeat(64);
+
+    await client.remove("user/alice/memories/source.md", {
+      expectedSha256: digest,
+    });
+    await client.remove("user/alice/memories/source.md");
+
+    const conditional = new URL(String(fetcher.mock.calls[0]![0]));
+    const plain = new URL(String(fetcher.mock.calls[1]![0]));
+    expect(fetcher.mock.calls[0]![1]?.method).toBe("DELETE");
+    expect(conditional.pathname).toBe("/api/v1/fs");
+    expect(conditional.searchParams.getAll("expected_sha256")).toEqual([
+      digest,
+    ]);
+    expect(plain.searchParams.has("expected_sha256")).toBe(false);
+  });
+
   it("sends identity headers and the Python/Go compatible search body", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

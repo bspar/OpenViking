@@ -641,6 +641,13 @@ enum Commands {
             help_heading = "Common options"
         )]
         timeout: Option<f64>,
+        /// Delete only if the stored file's SHA-256 matches this digest
+        #[arg(
+            long = "expected-sha256",
+            value_name = "digest",
+            help_heading = "Common options"
+        )]
+        expected_sha256: Option<String>,
     },
     /// [Data] Copy a file or directory
     Cp {
@@ -3600,7 +3607,8 @@ async fn main() {
             recursive,
             wait,
             timeout,
-        } => handlers::handle_rm(uri, recursive, wait, timeout, ctx).await,
+            expected_sha256,
+        } => handlers::handle_rm(uri, recursive, wait, timeout, expected_sha256, ctx).await,
         Commands::Cp {
             from_uri,
             to_uri,
@@ -5077,6 +5085,32 @@ mod tests {
         match cli.command {
             Commands::Language { language } => assert!(language.is_none()),
             _ => panic!("expected language command"),
+        }
+    }
+
+    #[test]
+    fn cli_rm_parses_optional_expected_sha256() {
+        let digest = "a".repeat(64);
+        let cli = Cli::try_parse_from([
+            "ov",
+            "rm",
+            "viking://user/alice/memories/source.md",
+            "--expected-sha256",
+            digest.as_str(),
+        ])
+        .expect("conditional rm should parse");
+        match cli.command {
+            Commands::Rm { uri, expected_sha256, .. } => {
+                assert_eq!(uri, "viking://user/alice/memories/source.md");
+                assert_eq!(expected_sha256.as_deref(), Some(digest.as_str()));
+            }
+            _ => panic!("expected rm"),
+        }
+        let plain = Cli::try_parse_from(["ov", "rm", "viking://resources/item"])
+            .expect("legacy rm should parse");
+        match plain.command {
+            Commands::Rm { expected_sha256, .. } => assert!(expected_sha256.is_none()),
+            _ => panic!("expected rm"),
         }
     }
 

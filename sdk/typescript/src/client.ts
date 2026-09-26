@@ -33,6 +33,7 @@ import type {
   ObserverFormat,
   PreflightAssetOptions,
   ReindexOptions,
+  RemoveOptions,
   RequestOptions,
   ResolveAssetsOptions,
   SearchContextOptions,
@@ -570,16 +571,14 @@ export class OpenVikingClient {
     });
   }
   /** Remove a resource or directory. */
-  remove(
-    uri: string,
-    options: { recursive?: boolean; wait?: boolean; timeout?: number } = {},
-  ): Promise<void> {
+  remove(uri: string, options: RemoveOptions = {}): Promise<void> {
     return this.request("DELETE", "/api/v1/fs", {
       query: {
         uri: normalizeURI(uri),
         recursive: options.recursive ?? false,
         wait: options.wait ?? false,
         timeout: options.timeout,
+        expected_sha256: options.expectedSha256,
       },
     });
   }

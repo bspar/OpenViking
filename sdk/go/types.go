@@ -213,9 +213,10 @@ type TreeOptions struct {
 
 // RemoveOptions controls Remove.
 type RemoveOptions struct {
-	Recursive bool
-	Wait      bool
-	Timeout   *float64
+	Recursive      bool
+	Wait           bool
+	Timeout        *float64
+	ExpectedSHA256 string
 }
 
 // WriteOptions controls Write.

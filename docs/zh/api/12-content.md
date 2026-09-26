@@ -209,6 +209,53 @@ openviking read viking://resources/docs/api.md
 
 ---
 
+### rm() - 条件删除文件
+
+仅当文件当前原始存储字节的 SHA-256 与提供的摘要一致时才删除。摘要为可选参数；省略时保留原有的文件/目录删除行为。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `uri` | string | 是 | - | 文件或目录的 Viking URI |
+| `recursive` | boolean | 否 | `false` | 递归删除目录（不可与 `expected_sha256` 同用） |
+| `wait` | boolean | 否 | `false` | 等待语义刷新 |
+| `timeout` | number | 否 | `null` | 等待超时秒数 |
+| `expected_sha256` | string | 否 | 未设置 | 原始存储文件字节的 SHA-256，必须是恰好 64 位小写十六进制字符 |
+
+传入摘要时，比较与删除共用同一个精确路径锁。摘要不匹配时，内容和索引都保持不变。对目录执行条件删除，或同时设置 `recursive=true`，均会失败；摘要格式和目标类型由服务端最终校验。
+
+**Python SDK（同步或异步）**
+
+```python
+client.rm("viking://user/alice/memories/source.md", expected_sha256=digest)
+# await async_client.rm("viking://user/alice/memories/source.md", expected_sha256=digest)
+```
+
+**TypeScript SDK**
+
+```typescript
+await client.remove("viking://user/alice/memories/source.md", { expectedSha256: digest });
+```
+
+**Go SDK**
+
+```go
+err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: digest})
+```
+
+**HTTP API**
+
+```text
+DELETE /api/v1/fs?uri=viking%3A%2F%2Fuser%2Falice%2Fmemories%2Fsource.md&expected_sha256=<64-lowercase-hex>
+```
+
+**CLI**
+
+```bash
+ov rm viking://user/alice/memories/source.md --expected-sha256 "$digest"
+```
+
+---
+
 ### write()
 
 写入文件，并自动刷新相关语义与向量。

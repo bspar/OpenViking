@@ -1174,10 +1174,14 @@ class AsyncHTTPClient:
         recursive: bool = False,
         wait: bool = False,
         timeout: Optional[float] = None,
+        *,
+        expected_sha256: Optional[str] = None,
     ) -> None:
         params = {"uri": VikingURI.normalize(uri), "recursive": recursive, "wait": wait}
         if timeout is not None:
             params["timeout"] = timeout
+        if expected_sha256 is not None:
+            params["expected_sha256"] = expected_sha256
         response = await self._request("DELETE", "/api/v1/fs", params=params)
         self._handle_response(response)
 
@@ -2533,8 +2537,13 @@ class SyncHTTPClient:
         recursive: bool = False,
         wait: bool = False,
         timeout: Optional[float] = None,
+        *,
+        expected_sha256: Optional[str] = None,
     ) -> None:
-        run_async(self._async_client.rm(uri, recursive=recursive, wait=wait, timeout=timeout))
+        run_async(self._async_client.rm(
+            uri, recursive=recursive, wait=wait, timeout=timeout,
+            expected_sha256=expected_sha256,
+        ))
 
     def mv(self, from_uri: str, to_uri: str) -> None:
         run_async(self._async_client.mv(from_uri, to_uri))

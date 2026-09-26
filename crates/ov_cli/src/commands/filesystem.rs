@@ -880,10 +880,13 @@ pub async fn rm(
     recursive: bool,
     wait: bool,
     timeout: Option<f64>,
+    expected_sha256: Option<&str>,
     output_format: OutputFormat,
     compact: bool,
 ) -> Result<()> {
-    let result = client.rm(uri, recursive, wait, timeout).await?;
+    let result = client
+        .rm_with_expected_sha256(uri, recursive, wait, timeout, expected_sha256)
+        .await?;
 
     let message = if let Some(count) = result
         .get("estimated_deleted_count")

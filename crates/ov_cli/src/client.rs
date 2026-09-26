@@ -664,6 +664,18 @@ impl HttpClient {
         wait: bool,
         timeout: Option<f64>,
     ) -> Result<serde_json::Value> {
+        self.rm_with_expected_sha256(uri, recursive, wait, timeout, None)
+            .await
+    }
+
+    pub async fn rm_with_expected_sha256(
+        &self,
+        uri: &str,
+        recursive: bool,
+        wait: bool,
+        timeout: Option<f64>,
+        expected_sha256: Option<&str>,
+    ) -> Result<serde_json::Value> {
         let mut params = vec![
             ("uri".to_string(), uri.to_string()),
             ("recursive".to_string(), recursive.to_string()),
@@ -671,6 +683,9 @@ impl HttpClient {
         ];
         if let Some(timeout) = timeout {
             params.push(("timeout".to_string(), timeout.to_string()));
+        }
+        if let Some(digest) = expected_sha256 {
+            params.push(("expected_sha256".to_string(), digest.to_string()));
         }
         self.delete("/api/v1/fs", &params).await
     }
@@ -2592,6 +2607,31 @@ mod tests {
         assert!(request.starts_with("POST /api/v1/search/glob "));
         assert!(!request.contains(r#""tags"#));
         assert!(!request.contains(r#""include_tags"#));
+    }
+
+    #[tokio::test]
+    async fn rm_sends_one_expected_sha256_only_when_supplied() {
+        let digest = "a".repeat(64);
+        let (base_url, request_rx) = spawn_request_capture_server().await;
+        let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
+        client
+            .rm_with_expected_sha256("viking://resources/demo.md", false, false, None, Some(&digest))
+            .await
+            .expect("conditional delete should succeed");
+        let request = request_rx.await.expect("request should be captured");
+        let first_line = request.lines().next().unwrap();
+        assert!(first_line.starts_with("DELETE /api/v1/fs?"), "{first_line}");
+        assert!(first_line.contains(&format!("expected_sha256={digest}")), "{first_line}");
+        assert_eq!(first_line.matches("expected_sha256=").count(), 1);
+
+        let (base_url, request_rx) = spawn_request_capture_server().await;
+        let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
+        client
+            .rm("viking://resources/demo.md", false, false, None)
+            .await
+            .expect("legacy delete should succeed");
+        let request = request_rx.await.expect("request should be captured");
+        assert!(!request.lines().next().unwrap().contains("expected_sha256="));
     }
 
     #[tokio::test]

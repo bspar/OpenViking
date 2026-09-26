@@ -209,6 +209,53 @@ openviking read viking://resources/docs/api.md
 
 ---
 
+### rm() - conditional file deletion
+
+Remove a file only if its current raw stored bytes match a supplied SHA-256 digest. The digest is optional; omitting it preserves the existing file/directory deletion behavior.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `uri` | string | Yes | - | File or directory Viking URI |
+| `recursive` | boolean | No | `false` | Remove a directory subtree (not allowed with `expected_sha256`) |
+| `wait` | boolean | No | `false` | Wait for semantic refresh |
+| `timeout` | number | No | `null` | Wait timeout in seconds |
+| `expected_sha256` | string | No | Unset | Exactly 64 lowercase hexadecimal characters: SHA-256 of the raw stored file bytes |
+
+With a digest, comparison and deletion share one exact-path lock. A mismatch leaves both the content and indexes unchanged. Conditional deletion of a directory or a request with `recursive=true` fails; the server validates the digest and target authoritatively.
+
+**Python SDK (sync or async)**
+
+```python
+client.rm("viking://user/alice/memories/source.md", expected_sha256=digest)
+# await async_client.rm("viking://user/alice/memories/source.md", expected_sha256=digest)
+```
+
+**TypeScript SDK**
+
+```typescript
+await client.remove("viking://user/alice/memories/source.md", { expectedSha256: digest });
+```
+
+**Go SDK**
+
+```go
+err := client.Remove(ctx, "viking://user/alice/memories/source.md", &openviking.RemoveOptions{ExpectedSHA256: digest})
+```
+
+**HTTP API**
+
+```text
+DELETE /api/v1/fs?uri=viking%3A%2F%2Fuser%2Falice%2Fmemories%2Fsource.md&expected_sha256=<64-lowercase-hex>
+```
+
+**CLI**
+
+```bash
+ov rm viking://user/alice/memories/source.md --expected-sha256 "$digest"
+```
+
+---
+
 ### write()
 
 Write a file and automatically refresh related semantics and vectors.

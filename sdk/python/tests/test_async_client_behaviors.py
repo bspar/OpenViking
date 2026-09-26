@@ -504,6 +504,19 @@ def test_sync_http_client_forwards_tags_to_filesystem_methods():
     assert mock_grep.call_args.kwargs["tags"] == ["env=prod"]
 
 
+def test_sync_rm_forwards_conditional_digest_and_preserves_positional_arguments():
+    client = SyncHTTPClient(url="http://localhost:1933")
+    digest = "a" * 64
+    with patch.object(client._async_client, "rm", new_callable=Mock) as mock_rm:
+        with patch("openviking_sdk.client.run_async"):
+            client.rm("viking://resources/demo.md", False, True, 5.0, expected_sha256=digest)
+            client.rm("viking://resources/demo.md")
+
+    assert mock_rm.call_args_list[0].kwargs["expected_sha256"] == digest
+    assert mock_rm.call_args_list[0].kwargs["timeout"] == 5.0
+    assert mock_rm.call_args_list[1].kwargs.get("expected_sha256") is None
+
+
 def test_sync_http_client_batch_add_messages_forwards_to_async_client():
     client = SyncHTTPClient(url="http://localhost:1933")
     messages = [
@@ -1504,6 +1517,23 @@ async def test_rm_uses_delete_request_with_timeout_when_provided():
             "timeout": 5.0,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_rm_conditional_digest_is_sent_once_and_omitted_by_default():
+    client = AsyncHTTPClient(url="http://localhost:1933")
+    client._request = AsyncMock(return_value=object())
+    client._handle_response = lambda _response: None
+    digest = "a" * 64
+
+    await client.rm("viking://resources/demo.md", expected_sha256=digest)
+    await client.rm("viking://resources/demo.md")
+
+    conditional = client._request.await_args_list[0].kwargs["params"]
+    plain = client._request.await_args_list[1].kwargs["params"]
+    assert conditional["expected_sha256"] == digest
+    assert list(conditional).count("expected_sha256") == 1
+    assert "expected_sha256" not in plain
 
 
 @pytest.mark.asyncio

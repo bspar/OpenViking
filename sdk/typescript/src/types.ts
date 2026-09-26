@@ -109,6 +109,13 @@ export interface WriteOptions extends WaitOptions {
   tagMode?: "replace" | "append" | "clear";
   extra?: JsonObject;
 }
+/** Options for removing a file or directory. */
+export interface RemoveOptions {
+  recursive?: boolean;
+  wait?: boolean;
+  timeout?: number;
+  expectedSha256?: string;
+}
 /** One file write in a batch. */
 export interface BatchWriteOperation {
   uri: string;

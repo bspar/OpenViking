@@ -1808,6 +1808,7 @@ pub async fn handle_rm(
     recursive: bool,
     wait: bool,
     timeout: Option<f64>,
+    expected_sha256: Option<String>,
     ctx: CliContext,
 ) -> Result<()> {
     let client = ctx.get_client();
@@ -1817,6 +1818,7 @@ pub async fn handle_rm(
         recursive,
         wait,
         timeout,
+        expected_sha256.as_deref(),
         ctx.output_format,
         ctx.compact,
     )

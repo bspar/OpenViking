@@ -309,6 +309,39 @@ func TestListAndTreeSendQueryOptions(t *testing.T) {
 	}
 }
 
+func TestRemoveConditionalDigestAndOmission(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	calls := 0
+	client, closeServer := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/fs" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("uri"); got != "viking://user/alice/memories/source.md" {
+			t.Fatalf("uri = %q", got)
+		}
+		got := r.URL.Query()["expected_sha256"]
+		if calls == 0 && !reflect.DeepEqual(got, []string{digest}) {
+			t.Fatalf("conditional digest values = %#v", got)
+		}
+		if calls == 1 && got != nil {
+			t.Fatalf("unconditional delete sent digest: %#v", got)
+		}
+		calls++
+		writeOK(t, w, map[string]any{})
+	}))
+	defer closeServer()
+
+	if err := client.Remove(context.Background(), "user/alice/memories/source.md", &RemoveOptions{ExpectedSHA256: digest}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Remove(context.Background(), "user/alice/memories/source.md", nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d", calls)
+	}
+}
+
 func TestFindSendsImageQuery(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "query.png")
 	if err := os.WriteFile(imagePath, []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
