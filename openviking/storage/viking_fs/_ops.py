@@ -3,7 +3,9 @@
 """Core filesystem operations mixin for VikingFS."""
 
 import asyncio
+import hashlib
 import math
+import re
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -40,6 +42,7 @@ from openviking.storage.viking_fs._base import (
 )
 from openviking.utils.time_utils import format_iso8601, parse_iso_datetime
 from openviking_cli.exceptions import (
+    AbortedError,
     InvalidArgumentError,
     NotFoundError,
     PermissionDeniedError,
@@ -219,6 +222,7 @@ class _OpsMixin:
         ctx: Optional[RequestContext] = None,
         lease_ref: Dict[str, Any] | None = None,
         auto_pathlock: bool = True,
+        expected_sha256: str | None = None,
     ) -> Dict[str, Any]:
         """Delete file/directory + recursively update vector index.
 
@@ -246,6 +250,15 @@ class _OpsMixin:
         await self._ensure_access(uri, ctx, action=AclAction.WRITE)
         path = self._uri_to_path(uri, ctx=ctx)
         target_uri = self._path_to_uri(path, ctx=ctx)
+        requested_recursive = recursive
+
+        if expected_sha256 is not None and (
+            not isinstance(expected_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        ):
+            raise InvalidArgumentError(
+                "expected_sha256 must be 64 lowercase hexadecimal characters"
+            )
 
         async def _estimate_deleted_count(target_path: str, real_ctx: RequestContext) -> int:
             """Estimate number of nodes to be deleted using vector index."""
@@ -296,7 +309,7 @@ class _OpsMixin:
         # When an outer lease is supplied we always honor it. Otherwise callers
         # can opt out of the VikingFS-level lease via auto_pathlock=False, in
         # which case the AGFS delete also runs with automatic pathlock disabled.
-        skip_lock = lease_ref is None and not auto_pathlock
+        skip_lock = lease_ref is None and not auto_pathlock and expected_sha256 is None
         lease = lease_ref
         if lease is None and not skip_lock:
             try:
@@ -305,6 +318,25 @@ class _OpsMixin:
                 raise ResourceBusyError(f"Resource is being processed: {uri}", uri=uri)
 
         try:
+            if expected_sha256 is not None:
+                if is_dir or requested_recursive:
+                    raise InvalidArgumentError(
+                        "expected_sha256 only supports non-directory files"
+                    )
+                fs_ctx = self._pathlock_fs_ctx(ctx, lease)
+                current = self._handle_agfs_read(
+                    await self._async_agfs.read(path, fs_ctx=fs_ctx)
+                )
+                actual_sha256 = hashlib.sha256(current).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise AbortedError(
+                        "File content changed before conditional deletion",
+                        details={
+                            "resource": target_uri,
+                            "expected_sha256": expected_sha256,
+                            "actual_sha256": actual_sha256,
+                        },
+                    )
             uris_to_delete = (
                 await self._collect_uris(
                     path,
