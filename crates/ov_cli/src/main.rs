@@ -5100,7 +5100,11 @@ mod tests {
         ])
         .expect("conditional rm should parse");
         match cli.command {
-            Commands::Rm { uri, expected_sha256, .. } => {
+            Commands::Rm {
+                uri,
+                expected_sha256,
+                ..
+            } => {
                 assert_eq!(uri, "viking://user/alice/memories/source.md");
                 assert_eq!(expected_sha256.as_deref(), Some(digest.as_str()));
             }
@@ -5109,7 +5113,27 @@ mod tests {
         let plain = Cli::try_parse_from(["ov", "rm", "viking://resources/item"])
             .expect("legacy rm should parse");
         match plain.command {
-            Commands::Rm { expected_sha256, .. } => assert!(expected_sha256.is_none()),
+            Commands::Rm {
+                expected_sha256, ..
+            } => assert!(expected_sha256.is_none()),
+            _ => panic!("expected rm"),
+        }
+    }
+
+    #[test]
+    fn cli_rm_preserves_explicit_empty_expected_sha256() {
+        let cli = Cli::try_parse_from([
+            "ov",
+            "rm",
+            "viking://user/alice/memories/source.md",
+            "--expected-sha256",
+            "",
+        ])
+        .expect("empty digest should reach server validation");
+        match cli.command {
+            Commands::Rm {
+                expected_sha256, ..
+            } => assert_eq!(expected_sha256.as_deref(), Some("")),
             _ => panic!("expected rm"),
         }
     }

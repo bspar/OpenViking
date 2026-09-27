@@ -2615,13 +2615,22 @@ mod tests {
         let (base_url, request_rx) = spawn_request_capture_server().await;
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
         client
-            .rm_with_expected_sha256("viking://resources/demo.md", false, false, None, Some(&digest))
+            .rm_with_expected_sha256(
+                "viking://resources/demo.md",
+                false,
+                false,
+                None,
+                Some(&digest),
+            )
             .await
             .expect("conditional delete should succeed");
         let request = request_rx.await.expect("request should be captured");
         let first_line = request.lines().next().unwrap();
         assert!(first_line.starts_with("DELETE /api/v1/fs?"), "{first_line}");
-        assert!(first_line.contains(&format!("expected_sha256={digest}")), "{first_line}");
+        assert!(
+            first_line.contains(&format!("expected_sha256={digest}")),
+            "{first_line}"
+        );
         assert_eq!(first_line.matches("expected_sha256=").count(), 1);
 
         let (base_url, request_rx) = spawn_request_capture_server().await;
@@ -2632,6 +2641,33 @@ mod tests {
             .expect("legacy delete should succeed");
         let request = request_rx.await.expect("request should be captured");
         assert!(!request.lines().next().unwrap().contains("expected_sha256="));
+    }
+
+    #[tokio::test]
+    async fn rm_sends_one_explicitly_empty_expected_sha256() {
+        let (base_url, request_rx) = spawn_request_capture_server().await;
+        let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
+        client
+            .rm_with_expected_sha256("viking://resources/demo.md", false, false, None, Some(""))
+            .await
+            .expect("empty digest should reach server validation");
+
+        let request = request_rx.await.expect("request should be captured");
+        let request_target = request
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap();
+        let fields: Vec<_> = request_target
+            .split('?')
+            .nth(1)
+            .expect("query should be present")
+            .split('&')
+            .filter(|field| field.starts_with("expected_sha256="))
+            .collect();
+        assert_eq!(fields, ["expected_sha256="]);
     }
 
     #[tokio::test]
