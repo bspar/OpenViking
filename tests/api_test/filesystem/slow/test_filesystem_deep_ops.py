@@ -1,9 +1,65 @@
+import hashlib
 import os
 import tempfile
 import uuid
 
 
 class TestFilesystemDeep:
+    def test_conditional_rm_rejects_stale_digest_then_removes_matching_file(self, api_client):
+        file_uri = f"viking://resources/conditional_rm_{uuid.uuid4().hex[:8]}.md"
+        written_bytes = b"# Conditional deletion\n\nHash these exact stored bytes.\n"
+        try:
+            write_resp = api_client.fs_write(
+                file_uri, written_bytes.decode("utf-8"), mode="create", wait=True
+            )
+            assert write_resp.status_code == 200, (
+                f"write should return 200, got {write_resp.status_code}: {write_resp.text[:200]}"
+            )
+
+            download_resp = api_client.content_download(file_uri)
+            assert download_resp.status_code == 200, (
+                f"download should return 200, got {download_resp.status_code}: {download_resp.text[:200]}"
+            )
+            raw_response_bytes = download_resp.content
+            assert raw_response_bytes == written_bytes
+            expected_sha256 = hashlib.sha256(raw_response_bytes).hexdigest()
+            stale_sha256 = "0" * 64 if expected_sha256 != "0" * 64 else "1" * 64
+
+            stale_url = api_client._build_url(
+                api_client.server_url,
+                "/api/v1/fs",
+                {"uri": file_uri, "expected_sha256": stale_sha256},
+            )
+            stale_rm_resp = api_client._request_with_retry("DELETE", stale_url)
+            assert stale_rm_resp.status_code == 409, (
+                f"stale conditional delete should return 409, got {stale_rm_resp.status_code}: "
+                f"{stale_rm_resp.text[:200]}"
+            )
+            assert stale_rm_resp.json()["error"]["code"] == "ABORTED"
+
+            preserved_resp = api_client.content_download(file_uri)
+            assert preserved_resp.status_code == 200
+            assert preserved_resp.content == raw_response_bytes
+
+            matching_url = api_client._build_url(
+                api_client.server_url,
+                "/api/v1/fs",
+                {"uri": file_uri, "expected_sha256": expected_sha256},
+            )
+            matching_rm_resp = api_client._request_with_retry("DELETE", matching_url)
+            assert matching_rm_resp.status_code == 200, (
+                f"matching conditional delete should return 200, got "
+                f"{matching_rm_resp.status_code}: {matching_rm_resp.text[:200]}"
+            )
+
+            stat_resp = api_client.fs_stat(file_uri)
+            assert stat_resp.status_code == 404, (
+                f"stat after matching conditional delete should return 404, got "
+                f"{stat_resp.status_code}: {stat_resp.text[:200]}"
+            )
+        finally:
+            api_client.fs_rm(file_uri)
+
     def test_mkdir_creates_directory_stat_confirms(self, api_client):
         dir_uri = f"viking://resources/mkdir_stat_{uuid.uuid4().hex[:8]}"
         try:
