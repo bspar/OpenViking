@@ -235,11 +235,13 @@ class _OpsMixin:
         Raises ResourceBusyError when the target is locked by an ongoing
         operation (e.g. semantic processing).
 
-        When ``auto_pathlock`` is False and no outer ``lease_ref`` is supplied,
-        the VikingFS-level tree/exact lease is skipped and the underlying AGFS
-        delete runs with automatic pathlock disabled. Callers must guarantee the
-        target is not concurrently mutated (e.g. best-effort shared upload
-        cleanup that only deletes already-expired directories).
+        When ``auto_pathlock`` is False, no outer ``lease_ref`` is supplied,
+        and ``expected_sha256`` is omitted, the VikingFS-level tree/exact lease
+        is skipped and the underlying AGFS delete runs with automatic pathlock
+        disabled. Callers must guarantee the target is not concurrently mutated
+        (e.g. best-effort shared upload cleanup that only deletes already-expired
+        directories). Conditional deletion always acquires or uses an exact
+        lease.
 
         Returns:
             Dict with 'estimated_deleted_count' indicating the estimated number
