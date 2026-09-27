@@ -6,7 +6,7 @@ import uuid
 
 class TestFilesystemDeep:
     def test_conditional_rm_rejects_stale_digest_then_removes_matching_file(self, api_client):
-        file_uri = f"viking://resources/conditional_rm_{uuid.uuid4().hex[:8]}.md"
+        file_uri = f"viking://resources/conditional_rm_{uuid.uuid4().hex}.md"
         written_bytes = b"# Conditional deletion\n\nHash these exact stored bytes.\n"
         try:
             write_resp = api_client.fs_write(
