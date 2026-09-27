@@ -274,9 +274,26 @@ class _OpsMixin:
         if expected_sha256 is not None:
             if lease is None:
                 try:
-                    lease = await self._async_agfs.pathlock_acquire_exact(path)
+                    lease = await self._async_agfs.pathlock_acquire_exact_without_parent_creation(
+                        path
+                    )
                 except LockAcquisitionError:
                     raise ResourceBusyError(f"Resource is being processed: {uri}", uri=uri)
+                except Exception as exc:
+                    if not is_not_found_error(exc):
+                        raise
+                    if requested_recursive:
+                        raise InvalidArgumentError(
+                            "expected_sha256 only supports non-directory files"
+                        ) from exc
+                    raise AbortedError(
+                        "File content changed before conditional deletion",
+                        details={
+                            "resource": target_uri,
+                            "expected_sha256": expected_sha256,
+                            "actual_sha256": None,
+                        },
+                    ) from exc
             conditional_verified = False
             try:
                 stat = await self._async_agfs.stat(path)

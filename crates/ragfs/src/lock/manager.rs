@@ -726,6 +726,25 @@ impl PathLockManager {
             .await
     }
 
+    /// Acquire an exact lock without creating missing token-parent directories.
+    pub async fn acquire_exact_without_parent_creation(
+        &self,
+        path: &str,
+        timeout: Duration,
+        owner_capability: Option<(&str, &str)>,
+    ) -> PathLockResult<OwnedPathLockLease> {
+        self.acquire_batch_with_parent_policy(
+            &[PathLockRequest {
+                path: path.to_string(),
+                kind: PathLockKind::Exact,
+            }],
+            timeout,
+            owner_capability,
+            false,
+        )
+        .await
+    }
+
     /// Acquire a tree lock on a single path.
     pub async fn acquire_tree(
         &self,
@@ -809,6 +828,17 @@ impl PathLockManager {
         timeout: Duration,
         owner_capability: Option<(&str, &str)>,
     ) -> PathLockResult<OwnedPathLockLease> {
+        self.acquire_batch_with_parent_policy(requests, timeout, owner_capability, true)
+            .await
+    }
+
+    async fn acquire_batch_with_parent_policy(
+        &self,
+        requests: &[PathLockRequest],
+        timeout: Duration,
+        owner_capability: Option<(&str, &str)>,
+        create_parent_dirs: bool,
+    ) -> PathLockResult<OwnedPathLockLease> {
         if requests.is_empty() {
             return Err(PathLockError::InvalidRequest(
                 "lock request batch must not be empty".to_string(),
@@ -866,7 +896,10 @@ impl PathLockManager {
                 }
             }
             first_attempt = false;
-            let acquired_lock_paths = match self.try_acquire_batch_once(&sorted, &owner_id).await {
+            let acquired_lock_paths = match self
+                .try_acquire_batch_once(&sorted, &owner_id, create_parent_dirs)
+                .await
+            {
                 Ok(acquired) => acquired,
                 Err(err) => {
                     drop(owner_registry);
@@ -973,6 +1006,7 @@ impl PathLockManager {
         &self,
         requests: &[PathLockRequest],
         owner_id: &str,
+        create_parent_dirs: bool,
     ) -> PathLockResult<Vec<AtomicAcquisition>> {
         let now_ns = Self::now_ns();
         match self
@@ -1003,16 +1037,31 @@ impl PathLockManager {
                             .await?;
                         let lock_path = resolved.acquire_lock_path.clone();
                         exact_resolutions.insert(request.path.clone(), resolved);
-                        self.ensure_lock_dir(&lock_path).await.map_err(|error| {
-                            PathLockError::Io(format!("failed to create lock dir: {error}"))
-                        })?;
-                        let change = self
+                        if create_parent_dirs {
+                            self.ensure_lock_dir(&lock_path).await.map_err(|error| {
+                                PathLockError::Io(format!("failed to create lock dir: {error}"))
+                            })?;
+                        } else {
+                            self.require_existing_lock_parent(&lock_path).await?;
+                        }
+                        let change = match self
                             .try_acquire_one(&lock_path, owner_id, PathLockKind::Exact)
-                            .await?;
+                            .await
+                        {
+                            Ok(change) => change,
+                            Err(error) if !create_parent_dirs => {
+                                self.require_existing_lock_parent(&lock_path).await?;
+                                return Err(error);
+                            }
+                            Err(error) => return Err(error),
+                        };
                         acquired.push(AtomicAcquisition {
-                            handle: lock_path,
+                            handle: lock_path.clone(),
                             change,
                         });
+                        if !create_parent_dirs {
+                            self.require_existing_lock_parent(&lock_path).await?;
+                        }
                     }
                     PathLockKind::Tree => {
                         let lock_path = self.resolver.resolve_tree_lock_path(&request.path).await?;
@@ -1322,6 +1371,23 @@ impl PathLockManager {
             }
         }
         Ok(())
+    }
+
+    async fn require_existing_lock_parent(&self, lock_path: &str) -> PathLockResult<()> {
+        let parent = lock_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("/");
+        match self.resolver.fs.stat(parent).await {
+            Ok(info) if info.is_dir => Ok(()),
+            Ok(_)
+            | Err(crate::core::Error::NotFound(_) | crate::core::Error::MountPointNotFound(_)) => {
+                Err(PathLockError::ParentNotFound(parent.to_string()))
+            }
+            Err(error) => Err(PathLockError::Io(format!(
+                "failed to stat lock parent '{parent}': {error}"
+            ))),
+        }
     }
 
     /// Refresh an owned lease. Returns "refreshed", "lost", or "failed".
@@ -2447,6 +2513,157 @@ mod tests {
             PathLockManager::new(fs.clone(), provider, PathLockConfig::default()),
             fs,
         )
+    }
+
+    #[tokio::test]
+    async fn non_creating_exact_lock_does_not_materialize_missing_parents() {
+        for filesystem_provider in [false, true] {
+            let fs = Arc::new(MemFileSystem::new());
+            fs.mkdir("/data", 0o755).await.unwrap();
+            let provider: Arc<dyn PathLockProvider> = if filesystem_provider {
+                Arc::new(crate::lock::provider::FilesystemPathLockProvider::new(
+                    fs.clone(),
+                    PathLockConfig::default().lock_expire_secs,
+                ))
+            } else {
+                Arc::new(crate::lock::provider::MemoryPathLockProvider::new())
+            };
+            let mgr = PathLockManager::new(fs.clone(), provider, PathLockConfig::default());
+            let result = mgr
+                .acquire_exact_without_parent_creation("/data/new-dir/missing.md", Duration::ZERO, None)
+                .await;
+            assert!(matches!(result, Err(PathLockError::ParentNotFound(_))), "{result:?}");
+            assert!(matches!(fs.stat("/data/new-dir").await, Err(Error::NotFound(_))));
+            assert!(fs.read_dir("/data", None, None, None, None).await.unwrap().is_empty());
+
+            fs.mkdir("/data/new-dir", 0o755).await.unwrap();
+            let lease = mgr
+                .acquire_exact_without_parent_creation("/data/new-dir/missing.md", Duration::ZERO, None)
+                .await
+                .unwrap();
+            assert!(mgr.is_locked("/data/new-dir/missing.md", true).await.unwrap());
+            mgr.release(&lease).await.unwrap();
+            assert!(fs.stat("/data/new-dir").await.unwrap().is_dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn default_exact_lock_still_creates_missing_parents() {
+        let (mgr, fs) = make_manager_with_fs().await;
+        let lease = mgr
+            .acquire_exact("/data/new-dir/missing.md", Duration::ZERO, None)
+            .await
+            .unwrap();
+        mgr.release(&lease).await.unwrap();
+        assert!(fs.stat("/data/new-dir").await.unwrap().is_dir);
+    }
+
+    struct RemoveParentBeforeTokenCreate {
+        inner: Arc<dyn PathLockProvider>,
+        fs: Arc<MemFileSystem>,
+        recreate_with_foreign_file: bool,
+    }
+
+    #[async_trait]
+    impl PathLockProvider for RemoveParentBeforeTokenCreate {
+        fn name(&self) -> &'static str {
+            "parent-race"
+        }
+
+        async fn read_token(&self, path: &str) -> PathLockResult<Option<LockToken>> {
+            self.inner.read_token(path).await
+        }
+
+        async fn try_create_token(&self, path: &str, token: &LockToken) -> PathLockResult<()> {
+            self.fs.remove_all("/data/new-dir").await.unwrap();
+            if self.recreate_with_foreign_file {
+                self.fs.mkdir("/data/new-dir", 0o755).await.unwrap();
+                self.fs
+                    .write("/data/new-dir/foreign.md", b"foreign", 0, WriteFlag::Create)
+                    .await
+                    .unwrap();
+            }
+            self.inner.try_create_token(path, token).await
+        }
+
+        async fn compare_and_write_token(
+            &self,
+            path: &str,
+            expected: &LockToken,
+            replacement: &LockToken,
+        ) -> PathLockResult<bool> {
+            self.inner.compare_and_write_token(path, expected, replacement).await
+        }
+
+        async fn refresh_token(&self, path: &str, owner: &str, time: u128) -> PathLockResult<bool> {
+            self.inner.refresh_token(path, owner, time).await
+        }
+
+        async fn remove_token(&self, path: &str, owner: &str, force: bool) -> PathLockResult<bool> {
+            self.inner.remove_token(path, owner, force).await
+        }
+
+        async fn scan_descendant_locks(&self, root: &str) -> PathLockResult<Vec<String>> {
+            self.inner.scan_descendant_locks(root).await
+        }
+    }
+
+    #[tokio::test]
+    async fn non_creating_exact_lock_does_not_recreate_parent_lost_during_acquire() {
+        for filesystem_provider in [false, true] {
+            let fs = Arc::new(MemFileSystem::new());
+            fs.mkdir("/data", 0o755).await.unwrap();
+            fs.mkdir("/data/new-dir", 0o755).await.unwrap();
+            let inner: Arc<dyn PathLockProvider> = if filesystem_provider {
+                Arc::new(crate::lock::provider::FilesystemPathLockProvider::new(
+                    fs.clone(), PathLockConfig::default().lock_expire_secs,
+                ))
+            } else {
+                Arc::new(crate::lock::provider::MemoryPathLockProvider::new())
+            };
+            let provider = Arc::new(RemoveParentBeforeTokenCreate {
+                inner,
+                fs: fs.clone(),
+                recreate_with_foreign_file: false,
+            });
+            let mgr = PathLockManager::new(fs.clone(), provider.clone(), PathLockConfig::default());
+            let result = mgr
+                .acquire_exact_without_parent_creation("/data/new-dir/missing.md", Duration::ZERO, None)
+                .await;
+            assert!(matches!(result, Err(PathLockError::ParentNotFound(_))), "{result:?}");
+            assert!(matches!(fs.stat("/data/new-dir").await, Err(Error::NotFound(_))));
+            assert_eq!(mgr.metrics_snapshot().await.active_lock_count, 0);
+            assert!(provider.inner.scan_descendant_locks("/data").await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn non_creating_exact_lock_never_cleans_up_foreign_recreated_parent() {
+        for filesystem_provider in [false, true] {
+            let fs = Arc::new(MemFileSystem::new());
+            fs.mkdir("/data", 0o755).await.unwrap();
+            fs.mkdir("/data/new-dir", 0o755).await.unwrap();
+            let inner: Arc<dyn PathLockProvider> = if filesystem_provider {
+                Arc::new(crate::lock::provider::FilesystemPathLockProvider::new(
+                    fs.clone(),
+                    PathLockConfig::default().lock_expire_secs,
+                ))
+            } else {
+                Arc::new(crate::lock::provider::MemoryPathLockProvider::new())
+            };
+            let provider = Arc::new(RemoveParentBeforeTokenCreate {
+                inner,
+                fs: fs.clone(),
+                recreate_with_foreign_file: true,
+            });
+            let mgr = PathLockManager::new(fs.clone(), provider, PathLockConfig::default());
+            let lease = mgr
+                .acquire_exact_without_parent_creation("/data/new-dir/missing.md", Duration::ZERO, None)
+                .await
+                .unwrap();
+            mgr.release(&lease).await.unwrap();
+            assert_eq!(fs.read("/data/new-dir/foreign.md", 0, 0).await.unwrap(), b"foreign");
+        }
     }
 
     #[tokio::test]

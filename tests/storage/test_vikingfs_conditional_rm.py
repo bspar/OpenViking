@@ -61,6 +61,9 @@ class _ConditionalDeleteAGFS:
         self._lease_paths[lease_ref] = path
         return {"lease_ref": lease_ref}
 
+    async def pathlock_acquire_exact_without_parent_creation(self, path: str):
+        return await self.pathlock_acquire_exact(path)
+
     async def pathlock_acquire_tree(self, path: str):
         return await self.pathlock_acquire_exact(path)
 
@@ -312,6 +315,25 @@ async def test_rm_rejects_absent_conditional_target_without_vector_cleanup(condi
         )
 
     assert backend._next_lease == 1
+    vector_store.delete_uris.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rm_uses_non_creating_lock_for_conditional_target(conditional_rm_env):
+    viking_fs, backend, vector_store, ctx = conditional_rm_env
+    uri = "viking://resources/new-dir/missing.md"
+    backend.pathlock_acquire_exact_without_parent_creation = AsyncMock(
+        side_effect=FileNotFoundError("missing parent")
+    )
+
+    with pytest.raises(AbortedError, match="content changed"):
+        await viking_fs.rm(uri, ctx=ctx, expected_sha256=hashlib.sha256(b"reviewed").hexdigest())
+
+    backend.pathlock_acquire_exact_without_parent_creation.assert_awaited_once_with(
+        viking_fs._uri_to_path(uri, ctx=ctx)
+    )
+    assert backend.stat_calls == []
+    assert backend._next_lease == 0
     vector_store.delete_uris.assert_not_awaited()
 
 

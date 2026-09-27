@@ -179,6 +179,10 @@ pub enum PathLockError {
         elapsed_ms: u64,
     },
 
+    /// Non-creating acquisition requires an existing directory for its lock token.
+    #[error("lock parent not found: {0}")]
+    ParentNotFound(String),
+
     /// Lock token mutation is temporarily blocked and should be retried.
     #[error("lock busy at '{lock_path}' during {operation}")]
     Busy {

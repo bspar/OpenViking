@@ -11,6 +11,25 @@ from openviking.storage.viking_vector_index_backend import _AsyncVectorAdapter
 
 
 @pytest.mark.asyncio
+async def test_non_creating_exact_lock_passes_account_context_and_lease_capability():
+    calls = []
+
+    class Binding:
+        def pathlock_acquire_exact_without_parent_creation(self, *args):
+            calls.append(args)
+            return {"lease_ref": "owned"}
+
+    owner = {"lease_ref": "outer"}
+    client = AsyncAGFSClient(Binding())
+    result = await client.pathlock_acquire_exact_without_parent_creation(
+        "/local/acct/resources/target.md", owner_lease_ref=owner
+    )
+
+    assert result == {"lease_ref": "owned"}
+    assert calls == [({"account_id": "acct"}, "/local/acct/resources/target.md", 0.0, owner)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["agfs", "vector"])
 async def test_async_agfs_client_hides_threadpool(backend):
     """Cancellation settles physical writes before cleanup may remove their data."""

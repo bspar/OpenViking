@@ -173,6 +173,7 @@ fn pathlock_err_to_py(err: PathLockError) -> PyErr {
             })
         }
         PathLockError::InvalidRequest(_) => PyValueError::new_err(err.to_string()),
+        PathLockError::ParentNotFound(_) => new_py_err("AGFSNotFoundError", err.to_string()),
         PathLockError::Io(_) | PathLockError::InvalidToken(_) | PathLockError::Internal(_) => {
             new_py_err("AGFSInternalError", err.to_string())
         }
@@ -2523,6 +2524,37 @@ impl RAGFSBindingClient {
         Python::attach(|py| owned_lease_to_py_dict(py, &lease))
     }
 
+    /// Acquire a conditional exact lock without creating missing content parents.
+    #[pyo3(signature = (ctx, path, timeout_secs=0.0, owner_lease_ref=None))]
+    fn pathlock_acquire_exact_without_parent_creation(
+        &self,
+        py: Python<'_>,
+        ctx: Option<HashMap<String, String>>,
+        path: String,
+        timeout_secs: f64,
+        owner_lease_ref: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let mgr = self.clone_pathlock_manager();
+        let fs_ctx = build_fs_context(ctx);
+        let timeout = validate_timeout_secs(timeout_secs)?;
+        let owner_capability = extract_optional_owned_lease_ref(py, owner_lease_ref.as_ref())?;
+        let lease = self
+            .run_scoped(py, fs_ctx, move || {
+                let mgr = mgr.clone();
+                let path = path.clone();
+                let capability = owner_capability.clone();
+                async move {
+                    let capability = capability.as_ref().map(|(lease_ref, ownership_ref)| {
+                        (lease_ref.as_str(), ownership_ref.as_str())
+                    });
+                    mgr.acquire_exact_without_parent_creation(&path, timeout, capability)
+                        .await
+                }
+            })
+            .map_err(pathlock_err_to_py)?;
+        Python::attach(|py| owned_lease_to_py_dict(py, &lease))
+    }
+
     /// Acquire exact locks on multiple paths.
     #[pyo3(signature = (ctx, paths, timeout_secs=0.0, owner_lease_ref=None))]
     fn pathlock_acquire_exact_batch(
@@ -3075,6 +3107,18 @@ mod tests {
     use super::*;
     use pyo3::types::PyDict;
     use std::fs;
+
+    #[test]
+    fn non_creating_lock_missing_parent_maps_to_not_found() {
+        Python::initialize();
+        Python::attach(|py| {
+            let not_found = get_exception(py, "AGFSNotFoundError").unwrap();
+            let error = pathlock_err_to_py(PathLockError::ParentNotFound(
+                "/local/default/resources/new-dir".to_string(),
+            ));
+            assert!(error.is_instance(py, &not_found));
+        });
+    }
 
     #[test]
     fn detach_blocking_helper_runs_without_python_objects() {

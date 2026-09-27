@@ -377,6 +377,23 @@ class AsyncAGFSClient:
             owner_lease_ref,
         )
 
+    async def pathlock_acquire_exact_without_parent_creation(
+        self,
+        path: str,
+        timeout_secs: float = 0.0,
+        owner_lease_ref: Dict[str, Any] | None = None,
+        *,
+        fs_ctx: Dict[str, str] | None = None,
+    ) -> Dict[str, Any]:
+        """Acquire an exact lease without materializing missing content parents."""
+        return await self.run(
+            "pathlock_acquire_exact_without_parent_creation",
+            _fs_ctx_or_default(path, fs_ctx),
+            path,
+            timeout_secs,
+            owner_lease_ref,
+        )
+
     async def pathlock_acquire_exact_batch(
         self,
         paths: list[str],
