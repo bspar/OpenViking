@@ -226,8 +226,10 @@ class _OpsMixin:
     ) -> Dict[str, Any]:
         """Delete file/directory + recursively update vector index.
 
-        This method is idempotent: deleting a non-existent file succeeds
-        after cleaning up any orphan index records.
+        When ``expected_sha256`` is omitted, this method is idempotent:
+        deleting a non-existent file succeeds after cleaning up any orphan
+        index records. Conditional deletion with ``expected_sha256`` fails
+        closed for a missing target and raises ``AbortedError`` instead.
 
         Acquires a path lock, deletes VectorDB records, then FS files.
         Raises ResourceBusyError when the target is locked by an ongoing
